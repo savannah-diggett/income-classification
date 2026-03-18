@@ -1,0 +1,318 @@
+---
+title: 'Precision-Focused Income Classification Using Machine Learning: A Comparison of Decision Trees, Random Forest, and Logistic Regression'
+author: "Savannah Diggett"
+date: "2025-02-19"
+output:
+  pdf_document: default
+  html_document: default
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+
+# Project objective
+The business goal is to identify customers earning more than $50K per year. Because incorrectly labeling lower-income customers as high-income would be costly, the main modeling priority is reducing false positives.For that reason, precision is the primary evaluation metric rather than overall accuracy. The preferred model is the one that achieves the highest precision while maintaining an acceptable level of recall.
+
+```{r}
+# Loading libraries
+library(rpart)
+library(rpart.plot)
+library(caret)
+library(randomForest)
+library(dplyr)
+```
+
+
+```{r}
+# Data source: UCI Adult Income dataset
+train_url <- "https://archive.ics.uci.edu/ml/machine-learning-databases/adult/adult.data"
+test_url  <- "https://archive.ics.uci.edu/ml/machine-learning-databases/adult/adult.test"
+
+if (!file.exists("census_training.csv")) {
+  download.file(train_url, destfile = "census_training.csv")
+}
+
+if (!file.exists("census_test.csv")) {
+  download.file(test_url, destfile = "census_test.csv")
+}
+
+census_colnames <- c(
+  "age", "workclass", "fnlwgt", "education", "education_num",
+  "marital_status", "occupation", "relationship", "race", "sex",
+  "capital_gain", "capital_loss", "hours_per_week",
+  "native_country", "class"
+)
+
+census_trainingdf <- read.table(
+  "census_training.csv",
+  sep = ",",
+  header = FALSE,
+  strip.white = TRUE,
+  col.names = census_colnames
+)
+
+census_testdf <- read.table(
+  "census_test.csv",
+  sep = ",",
+  header = FALSE,
+  skip = 1,
+  strip.white = TRUE,
+  col.names = census_colnames
+)
+
+# Remove trailing period from test labels
+census_testdf$class <- gsub("\\.", "", census_testdf$class)
+
+# Convert character columns to factors
+census_trainingdf <- census_trainingdf %>%
+  mutate(across(where(is.character), as.factor))
+
+census_testdf <- census_testdf %>%
+  mutate(across(where(is.character), as.factor))
+
+# Align factor levels in the test set to training set
+for (col in names(census_trainingdf)) {
+  if (is.factor(census_trainingdf[[col]])) {
+    census_testdf[[col]] <- factor(
+      census_testdf[[col]],
+      levels = levels(census_trainingdf[[col]])
+    )
+  }
+}
+
+# Ensure target variable is a factor with consistent level order
+census_trainingdf$class <- factor(census_trainingdf$class, levels = c("<=50K", ">50K"))
+census_testdf$class <- factor(census_testdf$class, levels = c("<=50K", ">50K"))
+```
+
+
+
+## EDA
+```{r eda}
+summary(census_trainingdf)
+
+# Class balance
+table(census_trainingdf$class)
+
+# Example relationships between predictors and income class
+table(census_trainingdf$class, census_trainingdf$relationship)
+table(census_trainingdf$class, census_trainingdf$education)
+
+# Initial inspection suggests that relationship and education may provide useful separation between income groups.
+
+```
+
+```{r evaluation-function}
+evaluate_model <- function(pred_probs, true_labels, threshold = 0.5) {
+  pred_class <- ifelse(pred_probs > threshold, ">50K", "<=50K")
+  pred_class <- factor(pred_class, levels = c("<=50K", ">50K"))
+  
+  cm <- confusionMatrix(pred_class, true_labels, positive = ">50K")
+  
+  data.frame(
+    Precision = unname(cm$byClass["Precision"]),
+    Recall = unname(cm$byClass["Recall"]),
+    F1 = unname(cm$byClass["F1"]),
+    Accuracy = unname(cm$overall["Accuracy"])
+  )
+}
+```
+
+
+# Model 1: Decision Tree
+
+```{r}
+set.seed(123)
+
+dt_model <- rpart(
+  class ~ .,
+  data = census_trainingdf,
+  method = "class",
+  control = rpart.control(cp = 0.01, maxdepth = 5)
+)
+
+rpart.plot(dt_model, main = "Decision Tree")
+
+dt_probs <- predict(dt_model, newdata = census_testdf, type = "prob")[, ">50K"]
+
+dt_results <- evaluate_model(
+  pred_probs = dt_probs,
+  true_labels = census_testdf$class,
+  threshold = 0.7
+)
+
+dt_results
+
+```
+
+
+
+### Decision Tree Summary
+
+Using a classification threshold of 0.7 to prioritize precision, the decision tree achieved strong precision at the cost of some recall.
+
+This tradeoff is appropriate for the business objective of minimizing false positives.
+
+# Model 2: Random-Forest 
+
+```{r random-forest}
+set.seed(123)
+
+rf_model <- randomForest(
+  class ~ .,
+  data = census_trainingdf,
+  ntree = 100,
+  mtry = 5
+)
+
+rf_probs <- predict(rf_model, newdata = census_testdf, type = "prob")[, ">50K"]
+
+rf_results <- evaluate_model(
+  pred_probs = rf_probs,
+  true_labels = census_testdf$class,
+  threshold = 0.7
+)
+
+rf_results
+```
+### Summary: Random-Forest Model
+For this model, I used a random forest instead of a single decision tree.
+
+I again used predicted probabilities and a threshold of 0.7 to prioritize precision.
+
+I also included variable importance to better understand which predictors contributed most to the classification.
+
+# Model 3: Logistic Regression 1
+
+```{r logistic-regression}
+logit_model <- glm(
+  class ~ education + hours_per_week,
+  data = census_trainingdf,
+  family = "binomial"
+)
+
+logit_probs <- predict(logit_model, newdata = census_testdf, type = "response")
+
+logit_results <- evaluate_model(
+  pred_probs = logit_probs,
+  true_labels = census_testdf$class,
+  threshold = 0.5
+)
+
+logit_results
+
+```
+# Model 4: Full Logistic Regression
+```{r logistic-regression-full}
+logit_full <- glm(
+  class ~ . - education_num,
+  data = census_trainingdf,
+  family = "binomial"
+)
+
+logit_full_probs <- predict(logit_full, newdata = census_testdf, type = "response")
+
+logit_full_results <- evaluate_model(
+  pred_probs = logit_full_probs,
+  true_labels = census_testdf$class,
+  threshold = 0.5
+)
+
+logit_full_results
+
+```
+
+```{r model-comparison}
+model_results <- bind_rows(
+  cbind(Model = "Decision Tree", dt_results),
+  cbind(Model = "Random Forest", rf_results),
+  cbind(Model = "Logistic Regression", logit_results),
+  cbind(Model = "Full Logistic Regression", logit_full_results)
+)
+
+model_results %>%
+  arrange(desc(Precision))
+
+```
+
+```{r}
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(scales)
+
+# create results dataframe
+results <- data.frame(
+  Model = c("Random Forest", "Decision Tree", "Full LR", "LR"),
+  Precision = c(0.8590637, 0.7553398, 0.7287975, 0.5901738),
+  Recall = c(0.4485179, 0.5057202, 0.5988040, 0.2561102),
+  F1 = c(0.5893406, 0.6058246, 0.6574365, 0.3572076),
+  Accuracy = c(0.8523432, 0.8445427, 0.8525889, 0.7822615)
+)
+
+# reshape to long format for plotting
+results_long <- results %>%
+  pivot_longer(
+    cols = c(Precision, Recall, F1, Accuracy),
+    names_to = "Metric",
+    values_to = "Score"
+  )
+
+# set model order by precision
+results_long$Model <- factor(
+  results_long$Model,
+  levels = c("Random Forest", "Decision Tree", "Full LR", "LR")
+)
+
+# create a colorful grouped bar chart
+p <- ggplot(results_long, aes(x = Model, y = Score, fill = Metric)) +
+  geom_col(position = position_dodge(width = 0.8), width = 0.7) +
+  geom_text(
+    aes(label = percent(Score, accuracy = 0.1)),
+    position = position_dodge(width = 0.8),
+    vjust = -0.35,
+    size = 2.5
+  ) +
+  scale_y_continuous(
+    labels = percent_format(accuracy = 1),
+    limits = c(0, 1)
+  ) +
+  scale_fill_manual(
+    values = c(
+      "Precision" = "#1b9e77",
+      "Recall" = "#d95f02",
+      "F1" = "#7570b3",
+      "Accuracy" = "#e7298a"
+    )
+  ) +
+  labs(
+    title = "Model Performance Comparison",
+    subtitle = "Random Forest achieved the highest precision, while Full LR had the strongest F1 score",
+    x = NULL,
+    y = "Score",
+    fill = "Metric",
+    caption = "Income Classification Project"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    plot.title = element_text(face = "bold", size = 18),
+    plot.subtitle = element_text(size = 11, color = "gray30"),
+    axis.text.x = element_text(face = "bold", size = 11),
+    legend.position = "top",
+    panel.grid.minor = element_blank()
+)
+
+# display plot
+p
+
+
+```
+
+# Conclusion
+
+The goal of this project was to identify customers earning more than $50K per year while minimizing false positives. Because incorrectly classifying a lower-income customer as a high-income customer would be costly for the bank’s targeting strategy, precision was selected as the primary evaluation metric, rather than overall accuracy.
+Several classification models were evaluated, including decision trees, random forests, and logistic regression models. Each model was assessed using predicted probabilities, threshold-based class labels, and confusion matrices to compute precision, recall, F1 score, and overall accuracy.
+Among the models tested, the Random Forest model achieved the highest precision (85.91%), meaning that when the model predicts a customer earns more than $50K, it is correct most of the time. Although the Random Forest model has lower recall (44.85%), this tradeoff is acceptable given the project’s objective of minimizing false positives.
+The Decision Tree model produced slightly lower precision (75.53%) but higher recall (50.57%), while the Full Logistic Regression model provided a more balanced tradeoff between precision and recall, with the highest F1 score (0.657). However, since the primary goal of this analysis was maximizing precision, the Random Forest model provides the best overall solution.
+In conclusion, the Random Forest model was selected as the preferred model, as it most effectively identifies high-income customers while minimizing incorrect high-income
