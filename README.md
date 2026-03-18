@@ -1,6 +1,7 @@
 # income-classification
 Machine learning comparison of Decision Trees, Random Forest, and Logistic Regression for classifying high-income individuals using the UCI Adult Income dataset.
-Adult Income Classification (Machine Learning)
+
+# Adult Income Classification Project (Machine Learning)
  
 ## Project Overview
 This project compares multiple machine learning models to classify individuals earning more than $50K per year using the UCI Adult Income dataset.
